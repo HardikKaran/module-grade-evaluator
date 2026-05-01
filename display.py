@@ -1,14 +1,30 @@
-def print_results(modules: list[dict], current: float, target: float, required: float | None) -> None:
+def print_results(
+    modules: list[dict],
+    current: float,
+    target: float,
+    required: float | None,
+    predictions: dict[str, float] | None = None,
+    required_after: float | None = None,
+) -> None:
+    predictions = predictions or {}
     print("\n--- Results ---")
     for m in modules:
         pct = round(m["current_score"] * 100, 1)
         if m["is_complete"]:
             print(f"  {m['name']}: {pct}% (complete)")
         elif not m["tasks"]:
-            print(f"  {m['name']}: no scores yet (placeholder)")
+            if m["name"] in predictions:
+                pred_pct = round(predictions[m["name"]] * 100, 1)
+                print(f"  {m['name']}: no scores yet  |  predicted: {pred_pct}%")
+            else:
+                print(f"  {m['name']}: no scores yet (placeholder)")
         else:
             remaining_pct = round(m["remaining_fraction"] * 100, 1)
-            print(f"  {m['name']}: {pct}% (incomplete — {remaining_pct}% of module remaining)")
+            if m["name"] in predictions:
+                pred_pct = round(predictions[m["name"]] * 100, 1)
+                print(f"  {m['name']}: {pct}% (incomplete, {remaining_pct}% remaining)  |  predicted: {pred_pct}%")
+            else:
+                print(f"  {m['name']}: {pct}% (incomplete — {remaining_pct}% of module remaining)")
 
     print(f"\nCurrent year grade: {round(current * 100, 1)}%")
     print(f"Target year grade:  {round(target * 100, 1)}%")
@@ -17,12 +33,24 @@ def print_results(modules: list[dict], current: float, target: float, required: 
         if current >= target:
             print("Already on track to hit the target — no remaining assessments needed.")
     elif required <= 1.0:
-        print(f"Required score on remaining assessments: {round(required * 100, 1)}%")
+        print(f"Required score on all remaining assessments: {round(required * 100, 1)}%")
     else:
         print(
-            f"Required score on remaining assessments: {round(required * 100, 1)}%"
+            f"Required score on all remaining assessments: {round(required * 100, 1)}%"
             f" (not achievable — target of {round(target * 100)}% is out of reach)"
         )
+
+    if predictions:
+        if required_after is None:
+            if current >= target:
+                print("With predictions applied: already on track.")
+        elif required_after <= 1.0:
+            print(f"Required score on unpredicted assessments (given predictions): {round(required_after * 100, 1)}%")
+        else:
+            print(
+                f"Required score on unpredicted assessments (given predictions): {round(required_after * 100, 1)}%"
+                f" (not achievable)"
+            )
 
 
 def print_prediction(predicted: float, target: float) -> None:
