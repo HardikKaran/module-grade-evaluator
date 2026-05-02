@@ -12,24 +12,29 @@ def compute_required(current: float, remaining_weight: float, target: float) -> 
     return (target - current) / remaining_weight
 
 
-def compute_prediction(modules: list[dict], predictions: dict[str, float]) -> float:
+def compute_prediction(modules: list[dict], predictions: dict[str, list]) -> float:
     predicted = 0.0
     for m in modules:
         predicted += m["current_score"] * m["module_weight"]
         if not m["is_complete"] and m["name"] in predictions:
-            predicted += predictions[m["name"]] * m["remaining_fraction"] * m["module_weight"]
+            for task in predictions[m["name"]]:
+                predicted += task["score"] * task["weight"] * m["module_weight"]
     return predicted
 
 
 def compute_required_after_predictions(
-    modules: list[dict], predictions: dict[str, float], target: float
+    modules: list[dict], predictions: dict[str, list], target: float
 ) -> float | None:
     predicted_year = compute_prediction(modules, predictions)
-    remaining_unpredicted = sum(
-        m["remaining_fraction"] * m["module_weight"]
-        for m in modules
-        if not m["is_complete"] and m["name"] not in predictions
-    )
+    remaining_unpredicted = 0.0
+    for m in modules:
+        if not m["is_complete"]:
+            if m["name"] in predictions:
+                pred_weight = sum(t["weight"] for t in predictions[m["name"]])
+                leftover = max(0.0, m["remaining_fraction"] - pred_weight)
+                remaining_unpredicted += leftover * m["module_weight"]
+            else:
+                remaining_unpredicted += m["remaining_fraction"] * m["module_weight"]
     if remaining_unpredicted <= 0:
         return None
     return (target - predicted_year) / remaining_unpredicted

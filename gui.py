@@ -12,13 +12,15 @@ TARGET = 0.70
 COLS = 3
 
 
+# ---------------------------------------------------------------------------
+# Pure helpers
+# ---------------------------------------------------------------------------
+
 def pct(decimal: float) -> str:
-    """Convert decimal (0.0-1.0) to percentage string like '72.0%'."""
     return f"{decimal * 100:.1f}%"
 
 
 def compute_stats(modules: list, predictions: dict) -> dict:
-    """Compute all stats: current, required, predicted, required_after."""
     current, remaining_weight = compute_current(modules)
     required = compute_required(current, remaining_weight, TARGET)
     predicted = compute_prediction(modules, predictions) if predictions else None
@@ -37,342 +39,366 @@ def compute_stats(modules: list, predictions: dict) -> dict:
 
 
 def _recompute_module(m: dict) -> dict:
-    """Recalculate current_score and remaining_fraction from tasks list."""
     m["current_score"] = sum(t["score"] * t["weight"] for t in m["tasks"])
     entered = sum(t["weight"] for t in m["tasks"])
     m["remaining_fraction"] = 0.0 if m["is_complete"] else round(1.0 - entered, 10)
     return m
 
 
+# ---------------------------------------------------------------------------
+# Layout: stats bar
+# ---------------------------------------------------------------------------
+
 def build_stats_bar(stats: dict) -> sg.Frame:
-    """Build the top stats bar frame."""
     elements = [
-        sg.Text(f"Current: {pct(stats['current'])}", font=("Arial", 10, "bold")),
+        sg.Text(f"Current: {pct(stats['current'])}", font=("Arial", 12, "bold")),
         sg.VerticalSeparator(),
-        sg.Text(f"Target: {pct(TARGET)}", font=("Arial", 10)),
+        sg.Text(f"Target: {pct(TARGET)}", font=("Arial", 12)),
     ]
 
     if stats["predicted"] is not None:
-        elements.append(sg.VerticalSeparator())
-        elements.append(
-            sg.Text(f"Predicted: {pct(stats['predicted'])}", font=("Arial", 10))
-        )
+        elements += [
+            sg.VerticalSeparator(),
+            sg.Text(f"Predicted: {pct(stats['predicted'])}", font=("Arial", 12)),
+        ]
 
     elements.append(sg.VerticalSeparator())
     if stats["required"] is not None:
-        if stats["required"] > 1.0:
-            elements.append(
-                sg.Text(
-                    f"Required: {pct(stats['required'])} (UNACHIEVABLE)",
-                    font=("Arial", 10),
-                    text_color="red",
-                )
-            )
-        else:
-            elements.append(
-                sg.Text(f"Required: {pct(stats['required'])}", font=("Arial", 10))
-            )
+        color = "red" if stats["required"] > 1.0 else sg.theme_text_color()
+        suffix = " (UNACHIEVABLE)" if stats["required"] > 1.0 else ""
+        elements.append(
+            sg.Text(f"Required: {pct(stats['required'])}{suffix}", font=("Arial", 12), text_color=color)
+        )
     else:
         if stats["current"] >= TARGET:
-            elements.append(
-                sg.Text("On track!", font=("Arial", 10), text_color="green")
-            )
+            elements.append(sg.Text("On track!", font=("Arial", 12), text_color="green"))
         else:
             elements.append(
-                sg.Text(
-                    "Below target, no remaining assessments",
-                    font=("Arial", 10),
-                    text_color="orange",
-                )
+                sg.Text("Below target, no remaining assessments", font=("Arial", 12), text_color="orange")
             )
 
     if stats["required_after"] is not None:
-        elements.append(sg.VerticalSeparator())
-        if stats["required_after"] > 1.0:
-            elements.append(
-                sg.Text(
-                    f"After predictions: {pct(stats['required_after'])} (UNACHIEVABLE)",
-                    font=("Arial", 10),
-                    text_color="red",
-                )
-            )
-        else:
-            elements.append(
-                sg.Text(
-                    f"After predictions: {pct(stats['required_after'])}",
-                    font=("Arial", 10),
-                )
-            )
+        color = "red" if stats["required_after"] > 1.0 else sg.theme_text_color()
+        suffix = " (UNACHIEVABLE)" if stats["required_after"] > 1.0 else ""
+        elements += [
+            sg.VerticalSeparator(),
+            sg.Text(
+                f"After predictions: {pct(stats['required_after'])}{suffix}",
+                font=("Arial", 12),
+                text_color=color,
+            ),
+        ]
 
-    return sg.Frame("Year Statistics", [[*elements]], font=("Arial", 10, "bold"))
+    return sg.Frame("Year Statistics", [[*elements]], font=("Arial", 12, "bold"))
 
+
+# ---------------------------------------------------------------------------
+# Layout: module card
+# ---------------------------------------------------------------------------
 
 def build_module_card(module: dict, predictions: dict, idx: int) -> sg.Frame:
-    """Build one module card frame."""
     name = module["name"]
-    badge_text = "DONE" if module["is_complete"] else "IN PROGRESS"
-    badge_color = ("white", "green") if module["is_complete"] else ("white", "orange")
+    is_complete = module["is_complete"]
+    badge_text = "DONE" if is_complete else "IN PROGRESS"
+    badge_bg = "green" if is_complete else "orange"
+
+    pred_tasks = predictions.get(name, []) if not is_complete else []
+
+    # Build table data: obtained tasks then predicted tasks
+    table_data = []
+    for i, task in enumerate(module["tasks"]):
+        label = task.get("name", "").strip() or f"Task {i + 1}"
+        table_data.append([label, pct(task["score"]), pct(task["weight"]), "Obtained"])
+    for pt in pred_tasks:
+        label = pt.get("name", "").strip() or "Predicted"
+        table_data.append([label, pct(pt["score"]), pct(pt["weight"]), "Predicted"])
 
     rows = [
         [
-            sg.Text(name, font=("Arial", 11, "bold")),
-            sg.Text(badge_text, font=("Arial", 9), text_color=badge_color[0], background_color=badge_color[1], pad=(10, 0)),
+            sg.Text(name, font=("Arial", 14, "bold")),
+            sg.Text(
+                badge_text,
+                font=("Arial", 11),
+                text_color="white",
+                background_color=badge_bg,
+                pad=(8, 0),
+            ),
         ],
-        [sg.Text(f"Weight: {pct(module['module_weight'])}", font=("Arial", 9))],
+        [sg.Text(f"Weight toward year: {pct(module['module_weight'])}", font=("Arial", 11))],
     ]
 
-    for i, task in enumerate(module["tasks"]):
-        task_name = task.get("name", "").strip() or f"Task {i + 1}"
+    if table_data:
         rows.append(
             [
-                sg.Text(
-                    f"{task_name}: {pct(task['score'])} / {pct(task['weight'])} wt",
-                    font=("Arial", 9),
+                sg.Table(
+                    values=table_data,
+                    headings=["Task", "Score", "Weight", "Status"],
+                    col_widths=[5, 5, 5, 7],
+                    auto_size_columns=False,
+                    hide_vertical_scroll=True,
+                    num_rows=len(table_data),
+                    font=("Arial", 11),
+                    header_font=("Arial", 11, "bold"),
+                    pad=(0, 2),
+                    justification="left",
+                    row_height=35,
+                    enable_events=False,
                 )
             ]
         )
-
-    if name in predictions and not module["is_complete"]:
-        rows.append(
-            [sg.Text(f"Predicted: {pct(predictions[name])}", font=("Arial", 9))]
-        )
+    else:
+        rows.append([sg.Text("No tasks entered", font=("Arial", 11), text_color="gray")])
 
     rows.append(
-        [
-            sg.Text(
-                f"Current score: {pct(module['current_score'])}",
-                font=("Arial", 9, "bold"),
-            )
-        ]
+        [sg.Text(f"Current score: {pct(module['current_score'])}", font=("Arial", 11, "bold"))]
     )
+
+    if pred_tasks:
+        predicted_total = module["current_score"] + sum(
+            t["score"] * t["weight"] for t in pred_tasks
+        )
+        rows.append(
+            [sg.Text(f"Predicted score: {pct(predicted_total)}", font=("Arial", 11))]
+        )
+
     rows.append([sg.Button("Edit Module", key=f"EDIT_{idx}", size=(12, 1))])
 
-    return sg.Frame(
-        "", rows, border_width=1, font=("Arial", 9), vertical_alignment="top"
-    )
+    return sg.Frame("", rows, border_width=1, font=("Arial", 11), vertical_alignment="top", size=(1000, 400))
 
+
+# ---------------------------------------------------------------------------
+# Layout: module grid + main window
+# ---------------------------------------------------------------------------
 
 def build_module_grid(modules: list, predictions: dict) -> sg.Column:
-    """Build scrollable module grid, completed first."""
     sorted_mods = (
         [(i, m) for i, m in enumerate(modules) if m["is_complete"]]
         + [(i, m) for i, m in enumerate(modules) if not m["is_complete"]]
     )
-
     cards = [build_module_card(m, predictions, i) for i, m in sorted_mods]
 
-    if not cards:
-        return None
-
-    rows = [cards[j : j + COLS] for j in range(0, len(cards), COLS)]
-    layout = [
-        [
-            sg.Column(
-                [[card for card in row]],
-                element_justification="left",
-                vertical_alignment="top",
-            )
-        ]
-        for row in rows
-    ]
+    # Pack cards into rows of COLS columns
+    layout = []
+    for j in range(0, len(cards), COLS):
+        row_cards = cards[j : j + COLS]
+        layout.append(row_cards)  # Each row is just a list of cards
 
     return sg.Column(
         layout,
         scrollable=True,
         vertical_scroll_only=True,
-        size=(900, 500),
+        size=(1400, 700),
         element_justification="left",
+        vertical_alignment="top",
     )
 
 
 def build_main_layout(modules: list, predictions: dict) -> list:
-    """Build full main window layout."""
     stats = compute_stats(modules, predictions)
-    stats_bar = build_stats_bar(stats)
-
     layout = [
-        [stats_bar],
+        [build_stats_bar(stats)],
         [sg.HorizontalSeparator()],
     ]
-
     if modules:
         layout.append([sg.Button("Add Module", key="ADD_MODULE", size=(15, 1))])
-        grid = build_module_grid(modules, predictions)
-        if grid:
-            layout.append([grid])
+        layout.append([build_module_grid(modules, predictions)])
     else:
         layout.append(
             [
-                sg.Text(
-                    "No modules yet. Click 'Add Module' to get started.",
-                    font=("Arial", 11),
-                ),
+                sg.Text("No modules yet. Click 'Add Module' to get started.", font=("Arial", 11)),
                 sg.Button("Add Module", key="ADD_MODULE_EMPTY", size=(15, 1)),
             ]
         )
-
     return layout
 
 
 def make_main_window(modules: list, predictions: dict) -> sg.Window:
-    """Create and return the main window."""
     layout = build_main_layout(modules, predictions)
     return sg.Window(
         "Module Grade Evaluator",
         layout,
         resizable=True,
         finalize=True,
-        size=(1000, 700),
+        size=(1600, 950),
     )
 
 
-def validate_percent(val: str, field_name: str) -> float | None:
-    """Validate and convert percentage string (0-100) to decimal (0-1)."""
+# ---------------------------------------------------------------------------
+# Dialog helpers: task row builders
+# ---------------------------------------------------------------------------
+
+def build_task_rows(tasks: list) -> list:
+    """Input rows for obtained tasks."""
+    rows = [
+        [
+            sg.Text("Name (opt.)", font=("Arial", 11), size=(20, 1)),
+            sg.Text("Score %", font=("Arial", 11), size=(10, 1)),
+            sg.Text("Weight %", font=("Arial", 11), size=(10, 1)),
+            sg.Text("", size=(4, 1)),
+        ]
+    ]
+    for i, task in enumerate(tasks):
+        rows.append(
+            [
+                sg.Input(task.get("name", ""), key=f"TASK_NAME_{i}", size=(20, 1), font=("Arial", 11)),
+                sg.Input(f"{task['score'] * 100:.1f}", key=f"TASK_SCORE_{i}", size=(10, 1), font=("Arial", 11)),
+                sg.Input(f"{task['weight'] * 100:.1f}", key=f"TASK_WEIGHT_{i}", size=(10, 1), font=("Arial", 11)),
+                sg.Button("X", key=f"DEL_TASK_{i}", size=(4, 1), button_color=("white", "red")),
+            ]
+        )
+    return rows
+
+
+def build_pred_task_rows(pred_tasks: list) -> list:
+    """Input rows for predicted tasks."""
+    rows = [
+        [
+            sg.Text("Name (opt.)", font=("Arial", 11), size=(20, 1)),
+            sg.Text("Score %", font=("Arial", 11), size=(10, 1)),
+            sg.Text("Weight %", font=("Arial", 11), size=(10, 1)),
+            sg.Text("", size=(4, 1)),
+        ]
+    ]
+    for i, pt in enumerate(pred_tasks):
+        rows.append(
+            [
+                sg.Input(pt.get("name", ""), key=f"PT_NAME_{i}", size=(20, 1), font=("Arial", 11)),
+                sg.Input(f"{pt['score'] * 100:.1f}", key=f"PT_SCORE_{i}", size=(10, 1), font=("Arial", 11)),
+                sg.Input(f"{pt['weight'] * 100:.1f}", key=f"PT_WEIGHT_{i}", size=(10, 1), font=("Arial", 11)),
+                sg.Button("X", key=f"DEL_PT_{i}", size=(4, 1), button_color=("white", "red")),
+            ]
+        )
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Dialog helpers: snapshot (preserve state across rebuilds without validation)
+# ---------------------------------------------------------------------------
+
+def _snapshot(values: dict, module: dict, tasks: list, pred_tasks: list):
+    """Read current dialog widget values into local state (no validation)."""
+    module = module.copy()
+    module["name"] = values.get("MOD_NAME", module["name"])
+    module["is_complete"] = values.get("MOD_COMPLETE", module["is_complete"])
     try:
-        pct_val = float(val.strip())
-        if pct_val < 0 or pct_val > 100:
-            sg.popup_error(
-                f"{field_name} must be between 0 and 100",
-                title="Invalid Input",
-            )
+        module["module_weight"] = float(values.get("MOD_WEIGHT", "0")) / 100
+    except (ValueError, TypeError):
+        pass
+
+    new_tasks = []
+    for i, t in enumerate(tasks):
+        nt = t.copy()
+        nt["name"] = values.get(f"TASK_NAME_{i}", "")
+        try:
+            nt["score"] = float(values.get(f"TASK_SCORE_{i}", "0")) / 100
+        except (ValueError, TypeError):
+            pass
+        try:
+            nt["weight"] = float(values.get(f"TASK_WEIGHT_{i}", "0")) / 100
+        except (ValueError, TypeError):
+            pass
+        new_tasks.append(nt)
+
+    new_pred = []
+    for i, pt in enumerate(pred_tasks):
+        npt = pt.copy()
+        npt["name"] = values.get(f"PT_NAME_{i}", "")
+        try:
+            npt["score"] = float(values.get(f"PT_SCORE_{i}", "0")) / 100
+        except (ValueError, TypeError):
+            pass
+        try:
+            npt["weight"] = float(values.get(f"PT_WEIGHT_{i}", "0")) / 100
+        except (ValueError, TypeError):
+            pass
+        new_pred.append(npt)
+
+    return module, new_tasks, new_pred
+
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+def validate_percent(val: str, field_name: str) -> float | None:
+    try:
+        v = float(val.strip())
+        if v < 0 or v > 100:
+            sg.popup_error(f"{field_name} must be between 0 and 100", title="Invalid Input")
             return None
-        return pct_val / 100.0
+        return v / 100.0
     except ValueError:
         sg.popup_error(f"{field_name} must be a number", title="Invalid Input")
         return None
 
 
-def validate_module_name(
-    name: str, modules: list, editing_idx: int | None
-) -> bool:
-    """Validate module name (non-empty, not duplicate)."""
+def validate_module_name(name: str, other_modules: list) -> bool:
     if not name.strip():
         sg.popup_error("Module name cannot be empty", title="Invalid Input")
         return False
-
-    for i, m in enumerate(modules):
-        if i != editing_idx and m["name"].lower() == name.strip().lower():
-            sg.popup_error("Module name already exists", title="Invalid Input")
+    for m in other_modules:
+        if m["name"].lower() == name.lower():
+            sg.popup_error("A module with that name already exists", title="Invalid Input")
             return False
-
     return True
 
 
-def validate_task_weights(tasks: list) -> bool:
-    """Validate task weights sum to <= 100%."""
-    total = sum(t["weight"] for t in tasks)
+def validate_weight_sum(items: list, label: str) -> bool:
+    total = sum(t["weight"] for t in items)
     if total > 1.0 + 1e-9:
-        sg.popup_error(
-            f"Task weights exceed 100% (total: {pct(total)})",
-            title="Invalid Weights",
-        )
+        sg.popup_error(f"{label} weights exceed 100% (total: {pct(total)})", title="Invalid Weights")
         return False
     return True
 
 
-def build_task_rows(tasks: list) -> list:
-    """Build task input rows for edit dialog."""
-    rows = [
-        [
-            sg.Text("Task Name (optional)", font=("Arial", 9), size=(15, 1)),
-            sg.Text("Score %", font=("Arial", 9), size=(10, 1)),
-            sg.Text("Weight %", font=("Arial", 9), size=(10, 1)),
-            sg.Text("", font=("Arial", 9), size=(5, 1)),
-        ]
-    ]
-
-    for i, task in enumerate(tasks):
-        rows.append(
-            [
-                sg.Input(
-                    task.get("name", ""),
-                    key=f"TASK_NAME_{i}",
-                    size=(15, 1),
-                    font=("Arial", 9),
-                ),
-                sg.Input(
-                    f"{task['score'] * 100:.1f}",
-                    key=f"TASK_SCORE_{i}",
-                    size=(10, 1),
-                    font=("Arial", 9),
-                ),
-                sg.Input(
-                    f"{task['weight'] * 100:.1f}",
-                    key=f"TASK_WEIGHT_{i}",
-                    size=(10, 1),
-                    font=("Arial", 9),
-                ),
-                sg.Button(
-                    "X", key=f"DEL_TASK_{i}", size=(4, 1), button_color=("white", "red")
-                ),
-            ]
-        )
-
-    return rows
-
+# ---------------------------------------------------------------------------
+# Dialog: edit / add module
+# ---------------------------------------------------------------------------
 
 def open_module_dialog(
     module: dict | None, predictions: dict, idx: int | None, modules: list
 ) -> tuple[dict | None, dict, str]:
-    """Open edit/add module dialog. Returns (module, predictions, action)."""
+    """Open add/edit dialog. Returns (module_or_None, predictions, action)."""
     is_edit = module is not None
-    module = module or {
+    module = (module or {
         "name": "",
         "tasks": [],
         "current_score": 0.0,
         "module_weight": 0.0,
         "is_complete": False,
         "remaining_fraction": 1.0,
-    }
+    }).copy()
 
     tasks = [t.copy() for t in module["tasks"]]
     old_name = module["name"]
+    pred_tasks = [pt.copy() for pt in predictions.get(old_name, [])]
     other_modules = [m for i, m in enumerate(modules) if i != idx]
 
     while True:
         is_complete = module["is_complete"]
 
-        task_rows = build_task_rows(tasks)
         layout = [
             [
                 sg.Frame(
                     "Module Details",
                     [
-                        [
-                            sg.Text("Name:", font=("Arial", 10)),
-                            sg.Input(
-                                module["name"],
-                                key="MOD_NAME",
-                                size=(30, 1),
-                                font=("Arial", 10),
-                            ),
-                        ],
-                        [
-                            sg.Text("Weight toward year (%):", font=("Arial", 10)),
-                            sg.Input(
-                                f"{module['module_weight'] * 100:.1f}",
-                                key="MOD_WEIGHT",
-                                size=(10, 1),
-                                font=("Arial", 10),
-                            ),
-                        ],
-                        [
-                            sg.Checkbox(
-                                "Module is complete",
-                                default=is_complete,
-                                key="MOD_COMPLETE",
-                                font=("Arial", 10),
-                            )
-                        ],
+                        [sg.Text("Name:", font=("Arial", 12), size=(22, 1)),
+                         sg.Input(module["name"], key="MOD_NAME", size=(30, 1), font=("Arial", 12))],
+                        [sg.Text("Weight toward year (%):", font=("Arial", 12), size=(22, 1)),
+                         sg.Input(f"{module['module_weight'] * 100:.1f}", key="MOD_WEIGHT", size=(10, 1), font=("Arial", 12))],
+                        [sg.Checkbox("Module is complete", default=is_complete, key="MOD_COMPLETE", font=("Arial", 12))],
                     ],
-                    font=("Arial", 10, "bold"),
+                    font=("Arial", 12, "bold"),
                 )
             ],
             [
                 sg.Frame(
-                    "Tasks",
-                    [*task_rows, [sg.Button("Add Task", key="ADD_TASK", size=(12, 1))]],
-                    font=("Arial", 10, "bold"),
+                    "Obtained Tasks",
+                    [
+                        *build_task_rows(tasks),
+                        [sg.Button("Add Task", key="ADD_TASK", size=(14, 1))],
+                    ],
+                    font=("Arial", 12, "bold"),
                 )
             ],
         ]
@@ -381,47 +407,19 @@ def open_module_dialog(
             layout.append(
                 [
                     sg.Frame(
-                        "Prediction (for remaining assessment)",
+                        "Predicted Tasks (for remaining assessment)",
                         [
-                            [
-                                sg.Text("Predicted score (%):", font=("Arial", 10)),
-                                sg.Input(
-                                    f"{predictions.get(old_name, 0.0) * 100:.1f}"
-                                    if old_name in predictions
-                                    else "",
-                                    key="PRED_SCORE",
-                                    size=(10, 1),
-                                    font=("Arial", 10),
-                                ),
-                            ],
-                            [
-                                sg.Text(
-                                    "Leave blank to remove prediction",
-                                    font=("Arial", 9),
-                                    text_color="gray",
-                                )
-                            ],
+                            *build_pred_task_rows(pred_tasks),
+                            [sg.Button("Add Predicted Task", key="ADD_PT", size=(18, 1))],
                         ],
-                        font=("Arial", 10, "bold"),
+                        font=("Arial", 12, "bold"),
                     )
                 ]
             )
 
-        buttons = [
-            sg.Button("Save", key="SAVE", size=(10, 1)),
-            sg.Button("Cancel", key="CANCEL", size=(10, 1)),
-        ]
+        buttons = [sg.Button("Save", key="SAVE", size=(10, 1)), sg.Button("Cancel", key="CANCEL", size=(10, 1))]
         if is_edit:
-            buttons.insert(
-                1,
-                sg.Button(
-                    "Delete Module",
-                    key="DELETE",
-                    size=(12, 1),
-                    button_color=("white", "red"),
-                ),
-            )
-
+            buttons.insert(1, sg.Button("Delete Module", key="DELETE", size=(14, 1), button_color=("white", "red")))
         layout.append([sg.Column([[*buttons]], element_justification="center")])
 
         dialog = sg.Window(
@@ -429,166 +427,197 @@ def open_module_dialog(
             layout,
             resizable=True,
             finalize=True,
-            size=(600, 600),
+            size=(750, 800),
         )
 
         while True:
             event, values = dialog.read()
 
-            if event == sg.WIN_CLOSED or event == "CANCEL":
+            if event in (sg.WIN_CLOSED, "CANCEL"):
                 dialog.close()
                 return (None, predictions, "cancel")
 
             elif event == "ADD_TASK":
-                module["name"] = values["MOD_NAME"]
-                module["module_weight"] = validate_percent(
-                    values["MOD_WEIGHT"], "Module weight"
-                )
-                if module["module_weight"] is not None:
-                    dialog.close()
-                    tasks.append({"score": 0.5, "weight": 0.0, "name": ""})
-                    break
+                module, tasks, pred_tasks = _snapshot(values, module, tasks, pred_tasks)
+                dialog.close()
+                tasks.append({"score": 0.5, "weight": 0.0, "name": ""})
+                break
 
             elif event.startswith("DEL_TASK_"):
                 task_idx = int(event.split("_")[2])
-                module["name"] = values["MOD_NAME"]
-                module["module_weight"] = validate_percent(
-                    values["MOD_WEIGHT"], "Module weight"
-                )
-                if module["module_weight"] is not None:
-                    dialog.close()
-                    tasks.pop(task_idx)
-                    break
+                module, tasks, pred_tasks = _snapshot(values, module, tasks, pred_tasks)
+                dialog.close()
+                tasks.pop(task_idx)
+                break
+
+            elif event == "ADD_PT":
+                module, tasks, pred_tasks = _snapshot(values, module, tasks, pred_tasks)
+                dialog.close()
+                pred_tasks.append({"score": 0.5, "weight": 0.0, "name": ""})
+                break
+
+            elif event.startswith("DEL_PT_"):
+                pt_idx = int(event.split("_")[2])
+                module, tasks, pred_tasks = _snapshot(values, module, tasks, pred_tasks)
+                dialog.close()
+                pred_tasks.pop(pt_idx)
+                break
 
             elif event == "MOD_COMPLETE":
-                module["name"] = values["MOD_NAME"]
+                module, tasks, pred_tasks = _snapshot(values, module, tasks, pred_tasks)
                 module["is_complete"] = values["MOD_COMPLETE"]
-                module["module_weight"] = validate_percent(
-                    values["MOD_WEIGHT"], "Module weight"
-                )
-                if module["module_weight"] is not None:
-                    dialog.close()
-                    break
+                dialog.close()
+                break
 
             elif event == "SAVE":
-                module["name"] = values["MOD_NAME"].strip()
-                module["is_complete"] = values["MOD_COMPLETE"]
-
-                if not validate_module_name(module["name"], other_modules, None):
+                name = values["MOD_NAME"].strip()
+                if not validate_module_name(name, other_modules):
                     continue
 
-                module["module_weight"] = validate_percent(
-                    values["MOD_WEIGHT"], "Module weight"
-                )
-                if module["module_weight"] is None:
+                mod_weight = validate_percent(values["MOD_WEIGHT"], "Module weight")
+                if mod_weight is None:
                     continue
 
-                for i, task in enumerate(tasks):
-                    score_val = validate_percent(
-                        values[f"TASK_SCORE_{i}"], f"Task {i + 1} score"
-                    )
-                    weight_val = validate_percent(
-                        values[f"TASK_WEIGHT_{i}"], f"Task {i + 1} weight"
-                    )
-                    if score_val is None or weight_val is None:
+                # Validate obtained tasks
+                valid_tasks = []
+                ok = True
+                for i, t in enumerate(tasks):
+                    score = validate_percent(values[f"TASK_SCORE_{i}"], f"Task {i+1} score")
+                    weight = validate_percent(values[f"TASK_WEIGHT_{i}"], f"Task {i+1} weight")
+                    if score is None or weight is None:
+                        ok = False
                         break
-                    task["score"] = score_val
-                    task["weight"] = weight_val
-                    task["name"] = values[f"TASK_NAME_{i}"].strip()
-                else:
-                    if not validate_task_weights(tasks):
+                    valid_tasks.append({
+                        "score": score,
+                        "weight": weight,
+                        "name": values[f"TASK_NAME_{i}"].strip(),
+                    })
+                if not ok:
+                    continue
+                if not validate_weight_sum(valid_tasks, "Obtained task"):
+                    continue
+
+                # Validate predicted tasks (only if not complete)
+                valid_pred = []
+                is_complete_now = values["MOD_COMPLETE"]
+                if not is_complete_now:
+                    for i, pt in enumerate(pred_tasks):
+                        score = validate_percent(values[f"PT_SCORE_{i}"], f"Predicted task {i+1} score")
+                        weight = validate_percent(values[f"PT_WEIGHT_{i}"], f"Predicted task {i+1} weight")
+                        if score is None or weight is None:
+                            ok = False
+                            break
+                        valid_pred.append({
+                            "score": score,
+                            "weight": weight,
+                            "name": values[f"PT_NAME_{i}"].strip(),
+                        })
+                    if not ok:
                         continue
 
-                    module["tasks"] = tasks
-                    _recompute_module(module)
+                    # Check predicted weights don't exceed remaining fraction
+                    actual_remaining = round(1.0 - sum(t["weight"] for t in valid_tasks), 10)
+                    pred_total = sum(t["weight"] for t in valid_pred)
+                    if pred_total > actual_remaining + 1e-9:
+                        sg.popup_error(
+                            f"Predicted task weights ({pct(pred_total)}) exceed the remaining "
+                            f"module fraction ({pct(actual_remaining)})",
+                            title="Invalid Predicted Weights",
+                        )
+                        continue
 
-                    if module["is_complete"]:
-                        predictions.pop(old_name, None)
-                    elif "PRED_SCORE" in values:
-                        pred_str = values["PRED_SCORE"].strip()
-                        if pred_str:
-                            pred_val = validate_percent(pred_str, "Predicted score")
-                            if pred_val is None:
-                                continue
-                            predictions[module["name"]] = pred_val
-                        else:
-                            predictions.pop(module["name"], None)
+                # Commit
+                module["name"] = name
+                module["module_weight"] = mod_weight
+                module["is_complete"] = is_complete_now
+                module["tasks"] = valid_tasks
+                _recompute_module(module)
 
-                    if old_name != module["name"] and old_name in predictions:
-                        predictions[module["name"]] = predictions.pop(old_name)
+                # Migrate / update predictions
+                if old_name in predictions and old_name != name:
+                    predictions.pop(old_name, None)
 
-                    dialog.close()
-                    return (module, predictions, "save")
+                if is_complete_now:
+                    predictions.pop(name, None)
+                    predictions.pop(old_name, None)
+                elif valid_pred:
+                    predictions[name] = valid_pred
+                else:
+                    predictions.pop(name, None)
+                    predictions.pop(old_name, None)
+
+                dialog.close()
+                return (module, predictions, "save")
 
             elif event == "DELETE" and is_edit:
-                if sg.popup_yes_no(
-                    f"Delete module '{module['name']}'?", title="Confirm Delete"
-                ) == "Yes":
+                if sg.popup_yes_no(f"Delete module '{module['name']}'?", title="Confirm Delete") == "Yes":
                     dialog.close()
                     return (None, predictions, "delete")
 
 
+# ---------------------------------------------------------------------------
+# Persistence
+# ---------------------------------------------------------------------------
+
 def _do_save(modules: list, predictions: dict) -> None:
-    """Compute stats and save to grades.json."""
     stats = compute_stats(modules, predictions)
-    save_grades(
-        GRADES_FILE,
-        modules,
-        predictions,
-        stats["current"],
-        TARGET,
-        stats["required"],
-    )
+    save_grades(GRADES_FILE, modules, predictions, stats["current"], TARGET, stats["required"])
 
 
-def _handle_add_module(modules: list, predictions: dict) -> tuple[list, dict, bool]:
-    """Handle add module dialog. Returns (modules, predictions, changed)."""
+# ---------------------------------------------------------------------------
+# Event handlers
+# ---------------------------------------------------------------------------
+
+def _handle_add_module(modules: list, predictions: dict):
     module, predictions, action = open_module_dialog(None, predictions, None, modules)
     if action == "save":
         modules.append(module)
         _do_save(modules, predictions)
-        return (modules, predictions, True)
-    return (modules, predictions, False)
+        return modules, predictions, True
+    return modules, predictions, False
 
 
-def _handle_edit_module(
-    idx: int, modules: list, predictions: dict
-) -> tuple[list, dict, bool]:
-    """Handle edit module dialog. Returns (modules, predictions, changed)."""
-    old_module = modules[idx]
-    module, predictions, action = open_module_dialog(old_module, predictions, idx, modules)
-
+def _handle_edit_module(idx: int, modules: list, predictions: dict):
+    old_name = modules[idx]["name"]
+    module, predictions, action = open_module_dialog(modules[idx], predictions, idx, modules)
     if action == "save":
         modules[idx] = module
         _do_save(modules, predictions)
-        return (modules, predictions, True)
+        return modules, predictions, True
     elif action == "delete":
-        predictions.pop(old_module["name"], None)
+        predictions.pop(old_name, None)
         modules.pop(idx)
         _do_save(modules, predictions)
-        return (modules, predictions, True)
+        return modules, predictions, True
+    return modules, predictions, False
 
-    return (modules, predictions, False)
 
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 def run_gui() -> None:
-    """Main GUI entry point."""
     sg.theme("LightGrey1")
 
     modules, predictions = [], {}
     if os.path.exists(GRADES_FILE):
         try:
             modules, predictions = load_grades(GRADES_FILE)
+            # Migrate old float predictions ({"ModName": 0.75}) to new list format
+            for m in modules:
+                name = m["name"]
+                if name in predictions and isinstance(predictions[name], (int, float)):
+                    old_score = float(predictions[name])
+                    predictions[name] = [
+                        {"name": "Predicted", "score": old_score, "weight": m["remaining_fraction"]}
+                    ]
         except Exception as e:
-            sg.popup_error(
-                f"Could not load grades.json — starting fresh.\n\nError: {e}",
-                title="Load Error",
-            )
+            sg.popup_error(f"Could not load grades.json — starting fresh.\n\nError: {e}", title="Load Error")
 
     window = make_main_window(modules, predictions)
 
     while True:
-        event, values = window.read()
+        event, _ = window.read()
 
         if event in (sg.WIN_CLOSED, "Exit"):
             break
