@@ -9,7 +9,13 @@ from calculator import (
 from storage import GRADES_FILE, load_grades, save_grades
 
 TARGET = 0.70
-COLS = 3
+CARD_WIDTH = 1000
+CARD_GAP = 20
+
+
+def compute_cols(window_width: int) -> int:
+    """Compute number of columns that fit in window width."""
+    return max(1, window_width // (CARD_WIDTH + CARD_GAP))
 
 
 # ---------------------------------------------------------------------------
@@ -170,30 +176,31 @@ def build_module_card(module: dict, predictions: dict, idx: int) -> sg.Frame:
 # Layout: module grid + main window
 # ---------------------------------------------------------------------------
 
-def build_module_grid(modules: list, predictions: dict) -> sg.Column:
+def build_module_grid(modules: list, predictions: dict, cols: int = 3) -> sg.Column:
     sorted_mods = (
         [(i, m) for i, m in enumerate(modules) if m["is_complete"]]
         + [(i, m) for i, m in enumerate(modules) if not m["is_complete"]]
     )
     cards = [build_module_card(m, predictions, i) for i, m in sorted_mods]
 
-    # Pack cards into rows of COLS columns
+    # Pack cards into rows of cols columns
     layout = []
-    for j in range(0, len(cards), COLS):
-        row_cards = cards[j : j + COLS]
-        layout.append(row_cards)  # Each row is just a list of cards
+    for j in range(0, len(cards), cols):
+        row_cards = cards[j : j + cols]
+        layout.append(row_cards)
 
     return sg.Column(
         layout,
         scrollable=True,
         vertical_scroll_only=True,
-        size=(1400, 700),
+        expand_x=True,
+        expand_y=True,
         element_justification="left",
         vertical_alignment="top",
     )
 
 
-def build_main_layout(modules: list, predictions: dict) -> list:
+def build_main_layout(modules: list, predictions: dict, cols: int = 3) -> list:
     stats = compute_stats(modules, predictions)
     layout = [
         [build_stats_bar(stats)],
@@ -201,7 +208,7 @@ def build_main_layout(modules: list, predictions: dict) -> list:
     ]
     if modules:
         layout.append([sg.Button("Add Module", key="ADD_MODULE", size=(15, 1))])
-        layout.append([build_module_grid(modules, predictions)])
+        layout.append([build_module_grid(modules, predictions, cols)])
     else:
         layout.append(
             [
@@ -212,14 +219,14 @@ def build_main_layout(modules: list, predictions: dict) -> list:
     return layout
 
 
-def make_main_window(modules: list, predictions: dict) -> sg.Window:
-    layout = build_main_layout(modules, predictions)
+def make_main_window(modules: list, predictions: dict, size=None, cols: int = 3) -> sg.Window:
+    layout = build_main_layout(modules, predictions, cols)
     return sg.Window(
         "Module Grade Evaluator",
         layout,
         resizable=True,
         finalize=True,
-        size=(1600, 950),
+        size=size or (1600, 950),
     )
 
 
@@ -614,25 +621,38 @@ def run_gui() -> None:
         except Exception as e:
             sg.popup_error(f"Could not load grades.json — starting fresh.\n\nError: {e}", title="Load Error")
 
-    window = make_main_window(modules, predictions)
+    current_cols = compute_cols(1600)  # initial estimate
+    window = make_main_window(modules, predictions, cols=current_cols)
+
+    def rebuild(win, mods, preds, cols_count):
+        """Save window size, close, rebuild, restore size."""
+        saved_size = win.size
+        win.close()
+        new_win = make_main_window(mods, preds, size=saved_size, cols=cols_count)
+        return new_win
 
     while True:
-        event, _ = window.read()
+        event, _ = window.read(timeout=250)
 
         if event in (sg.WIN_CLOSED, "Exit"):
             break
 
+        elif event == sg.TIMEOUT_EVENT:
+            # Check if window width changed the column count
+            new_cols = compute_cols(window.size[0])
+            if new_cols != current_cols:
+                current_cols = new_cols
+                window = rebuild(window, modules, predictions, current_cols)
+
         elif event in ("ADD_MODULE", "ADD_MODULE_EMPTY"):
             window.hide()
             modules, predictions, _ = _handle_add_module(modules, predictions)
-            window.close()
-            window = make_main_window(modules, predictions)
+            window = rebuild(window, modules, predictions, current_cols)
 
         elif event and event.startswith("EDIT_"):
             idx = int(event.split("_")[1])
             window.hide()
             modules, predictions, _ = _handle_edit_module(idx, modules, predictions)
-            window.close()
-            window = make_main_window(modules, predictions)
+            window = rebuild(window, modules, predictions, current_cols)
 
     window.close()
