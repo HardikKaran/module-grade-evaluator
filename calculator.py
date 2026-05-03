@@ -38,3 +38,16 @@ def compute_required_after_predictions(
     if remaining_unpredicted <= 0:
         return None
     return (target - predicted_year) / remaining_unpredicted
+
+
+def compute_avg_required_incomplete(modules: list[dict], target: float) -> float | None:
+    """Average required grade for incomplete modules only."""
+    current, _ = compute_current(modules)
+    incomplete_remaining = sum(
+        m["remaining_fraction"] * m["module_weight"]
+        for m in modules
+        if not m["is_complete"]
+    )
+    if incomplete_remaining <= 0:
+        return None
+    return (target - current) / incomplete_remaining

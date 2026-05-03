@@ -5,6 +5,7 @@ from calculator import (
     compute_prediction,
     compute_required,
     compute_required_after_predictions,
+    compute_avg_required_incomplete,
 )
 from storage import GRADES_FILE, load_grades, save_grades
 
@@ -35,12 +36,14 @@ def compute_stats(modules: list, predictions: dict) -> dict:
         if predictions
         else None
     )
+    avg_required_incomplete = compute_avg_required_incomplete(modules, TARGET)
     return {
         "current": current,
         "remaining_weight": remaining_weight,
         "required": required,
         "predicted": predicted,
         "required_after": required_after,
+        "avg_required_incomplete": avg_required_incomplete,
     }
 
 
@@ -69,19 +72,18 @@ def build_stats_bar(stats: dict) -> sg.Frame:
         ]
 
     elements.append(sg.VerticalSeparator())
-    if stats["required"] is not None:
-        color = "red" if stats["required"] > 1.0 else sg.theme_text_color()
-        suffix = " (UNACHIEVABLE)" if stats["required"] > 1.0 else ""
+    if stats["avg_required_incomplete"] is not None:
+        color = "red" if stats["avg_required_incomplete"] > 1.0 else sg.theme_text_color()
+        suffix = " (UNACHIEVABLE)" if stats["avg_required_incomplete"] > 1.0 else ""
         elements.append(
-            sg.Text(f"Required: {pct(stats['required'])}{suffix}", font=("Arial", 12), text_color=color)
+            sg.Text(
+                f"Avg required (incomplete): {pct(stats['avg_required_incomplete'])}{suffix}",
+                font=("Arial", 12),
+                text_color=color,
+            )
         )
     else:
-        if stats["current"] >= TARGET:
-            elements.append(sg.Text("On track!", font=("Arial", 12), text_color="green"))
-        else:
-            elements.append(
-                sg.Text("Below target, no remaining assessments", font=("Arial", 12), text_color="orange")
-            )
+        elements.append(sg.Text("All modules complete", font=("Arial", 12), text_color="green"))
 
     if stats["required_after"] is not None:
         color = "red" if stats["required_after"] > 1.0 else sg.theme_text_color()
