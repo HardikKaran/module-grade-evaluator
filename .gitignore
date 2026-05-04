@@ -1,2 +1,11 @@
 grades.json
 __pycache__/
+*.egg-info/
+.venv/
+env/
+ENV/
+.env
+.pytest_cache/
+.coverage
+*.pyc
+*.pyo

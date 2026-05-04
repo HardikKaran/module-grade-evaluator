@@ -1,5 +1,12 @@
 import os
+import io
+import textwrap
 import PySimpleGUI as sg
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import numpy as np
 from calculator import (
     compute_current,
     compute_prediction,
@@ -52,6 +59,219 @@ def _recompute_module(m: dict) -> dict:
     entered = sum(t["weight"] for t in m["tasks"])
     m["remaining_fraction"] = 0.0 if m["is_complete"] else round(1.0 - entered, 10)
     return m
+
+
+# ---------------------------------------------------------------------------
+# Chart rendering
+# ---------------------------------------------------------------------------
+
+def render_module_chart_png(module: dict, predictions: dict, target: float = TARGET) -> bytes:
+    """Render a bar chart for one module and return raw PNG bytes."""
+    name = module["name"]
+    pred_tasks = predictions.get(name, []) if not module["is_complete"] else []
+
+    # Compute required score for remaining fraction
+    obtained_contribution = module["current_score"]
+    pred_contribution = sum(t["score"] * t["weight"] for t in pred_tasks)
+    obtained_weight = sum(t["weight"] for t in module["tasks"])
+    pred_weight = sum(t["weight"] for t in pred_tasks)
+    remaining_weight = round(1.0 - obtained_weight - pred_weight, 10)
+
+    required_score = None
+    if remaining_weight > 1e-9:
+        required_score = (target - obtained_contribution - pred_contribution) / remaining_weight
+
+    # Collect bar data
+    labels = []
+    values = []
+    colors = []
+
+    for i, task in enumerate(module["tasks"]):
+        task_label = task.get("name", "").strip() or f"Task {i + 1}"
+        labels.append(textwrap.shorten(task_label, width=14, placeholder="…"))
+        values.append(task["score"] * 100)
+        colors.append("#4CAF50")  # green for obtained
+
+    for pt in pred_tasks:
+        pt_label = pt.get("name", "").strip() or "Predicted"
+        labels.append(textwrap.shorten(pt_label, width=14, placeholder="…"))
+        values.append(pt["score"] * 100)
+        colors.append("#2196F3")  # blue for predicted
+
+    if required_score is not None:
+        labels.append("Required")
+        values.append(max(0.0, required_score * 100))
+        colors.append("#F44336" if required_score > 1.0 else "#FF9800")  # red if >100%, orange otherwise
+
+    # Create figure
+    fig, ax = plt.subplots(figsize=(9, 5), dpi=96)
+
+    if not labels:
+        ax.text(0.5, 0.5, "No data yet", ha="center", va="center", fontsize=14, transform=ax.transAxes)
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis("off")
+    else:
+        bars = ax.bar(range(len(labels)), values, color=colors, edgecolor="black", linewidth=1.2)
+
+        # Add bar labels
+        ax.bar_label(bars, fmt="%.1f%%", padding=3, fontsize=10)
+
+        # Add target line
+        ax.axhline(y=target * 100, color="red", linestyle="--", linewidth=2, label="Target (70%)")
+
+        # Set labels and formatting
+        ax.set_xticks(range(len(labels)))
+        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=9)
+        ax.set_ylabel("Score (%)", fontsize=11, fontweight="bold")
+        ax.set_ylim(0, max(110, max(values) * 1.15))
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f"{int(y)}%"))
+
+        # Legend
+        obtained_patch = mpatches.Patch(facecolor="#4CAF50", label="Obtained", edgecolor="black")
+        predicted_patch = mpatches.Patch(facecolor="#2196F3", label="Predicted", edgecolor="black")
+        required_patch = mpatches.Patch(facecolor="#FF9800", label="Required", edgecolor="black")
+        ax.legend(handles=[obtained_patch, predicted_patch, required_patch], loc="upper left", fontsize=9)
+
+        ax.grid(axis="y", alpha=0.3)
+
+    plt.tight_layout()
+
+    # Save to bytes
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=96)
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def open_module_chart_popup(module: dict, predictions: dict) -> None:
+    """Open a modal popup showing the bar chart for one module."""
+    png_bytes = render_module_chart_png(module, predictions)
+    layout = [
+        [sg.Text(module["name"], font=("Arial", 13, "bold"))],
+        [sg.Image(data=png_bytes)],
+        [sg.Button("Close", key="CLOSE_CHART", size=(10, 1))],
+    ]
+    win = sg.Window(
+        f"Chart — {module['name']}",
+        layout,
+        modal=True,
+        finalize=True,
+    )
+    while True:
+        ev, _ = win.read()
+        if ev in (sg.WIN_CLOSED, "CLOSE_CHART"):
+            break
+    win.close()
+
+
+def render_year_chart_png(modules: list, predictions: dict, target: float = TARGET) -> bytes:
+    """Render a grouped-bar overview chart for all modules and return PNG bytes."""
+    if not modules:
+        fig, ax = plt.subplots(figsize=(12, 6), dpi=96)
+        ax.text(0.5, 0.5, "No modules yet", ha="center", va="center", fontsize=14, transform=ax.transAxes)
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis("off")
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=96)
+        plt.close(fig)
+        buf.seek(0)
+        return buf.getvalue()
+
+    # Compute per-module scores
+    module_names = [textwrap.shorten(m["name"], width=12, placeholder="…") for m in modules]
+    obtained_scores = []
+    predicted_scores = []
+    required_scores = []
+
+    for m in modules:
+        # Obtained score (weighted sum)
+        obtained = m["current_score"] * 100
+        obtained_scores.append(obtained)
+
+        # Predicted score (obtained + predicted weighted sum)
+        pred_tasks = predictions.get(m["name"], []) if not m["is_complete"] else []
+        pred_contribution = sum(t["score"] * t["weight"] for t in pred_tasks) * 100
+        predicted_scores.append(obtained + pred_contribution)
+
+        # Required score on remaining
+        if m["is_complete"] or not pred_tasks:
+            required_scores.append(None)
+        else:
+            obtained_weight = sum(t["weight"] for t in m["tasks"])
+            pred_weight = sum(t["weight"] for t in pred_tasks)
+            remaining_weight = round(1.0 - obtained_weight - pred_weight, 10)
+            if remaining_weight > 1e-9:
+                required = (target - m["current_score"] - sum(t["score"] * t["weight"] for t in pred_tasks)) / remaining_weight * 100
+                required_scores.append(max(0.0, required))
+            else:
+                required_scores.append(None)
+
+    # Create grouped bar chart
+    fig, ax = plt.subplots(figsize=(12, 6), dpi=96)
+
+    x = np.arange(len(module_names))
+    bar_width = 0.25
+
+    bars1 = ax.bar(x - bar_width, obtained_scores, bar_width, label="Obtained", color="#4CAF50", edgecolor="black")
+    bars2 = ax.bar(x, predicted_scores, bar_width, label="Predicted", color="#2196F3", edgecolor="black")
+
+    # Required bars (only for incomplete modules with remaining)
+    required_values = [r if r is not None else 0 for r in required_scores]
+    required_mask = [r is not None for r in required_scores]
+    req_colors = ["#F44336" if (r is not None and r > 100) else "#FF9800" for r in required_scores]
+
+    for i, (val, mask, color) in enumerate(zip(required_values, required_mask, req_colors)):
+        if mask:
+            ax.bar(i + bar_width, val, bar_width, color=color, edgecolor="black")
+
+    # Formatting
+    ax.set_xlabel("Module", fontsize=11, fontweight="bold")
+    ax.set_ylabel("Score (%)", fontsize=11, fontweight="bold")
+    ax.set_xticks(x)
+    ax.set_xticklabels(module_names, rotation=45, ha="right", fontsize=9)
+    ax.set_ylim(0, max(110, max(obtained_scores + predicted_scores + required_values) * 1.1) if (obtained_scores or predicted_scores) else 110)
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f"{int(y)}%"))
+    ax.axhline(y=target * 100, color="red", linestyle="--", linewidth=2, label="Target (70%)")
+    ax.grid(axis="y", alpha=0.3)
+
+    # Legend
+    obtained_patch = mpatches.Patch(facecolor="#4CAF50", label="Obtained", edgecolor="black")
+    predicted_patch = mpatches.Patch(facecolor="#2196F3", label="Predicted", edgecolor="black")
+    required_patch = mpatches.Patch(facecolor="#FF9800", label="Required", edgecolor="black")
+    ax.legend(handles=[obtained_patch, predicted_patch, required_patch], loc="upper left", fontsize=10)
+
+    plt.tight_layout()
+
+    # Save to bytes
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=96)
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def open_year_chart_popup(modules: list, predictions: dict) -> None:
+    """Open a modal popup showing the year-level overview chart."""
+    png_bytes = render_year_chart_png(modules, predictions)
+    layout = [
+        [sg.Text("Year Overview", font=("Arial", 13, "bold"))],
+        [sg.Image(data=png_bytes)],
+        [sg.Button("Close", key="CLOSE_CHART", size=(10, 1))],
+    ]
+    win = sg.Window(
+        "Year Chart",
+        layout,
+        modal=True,
+        finalize=True,
+    )
+    while True:
+        ev, _ = win.read()
+        if ev in (sg.WIN_CLOSED, "CLOSE_CHART"):
+            break
+    win.close()
 
 
 # ---------------------------------------------------------------------------
@@ -136,20 +356,32 @@ def build_module_card(module: dict, predictions: dict, idx: int) -> sg.Frame:
     ]
 
     if table_data:
+        # --- MANUAL PADDING ADJUSTMENTS ---
+        # col_widths are in characters. Change these to tune column widths:
+        COL_SCORE  = 3   # e.g. "100.0%" = 6 chars; add buffer
+        COL_WEIGHT = 3   # same
+        COL_STATUS = 5  # "Predicted" = 9 chars
+        COL_TASK   = 10  # rest of space for task name; will truncate if too long
+        # row_height: pixels per row — increase for more vertical spacing
+        ROW_HEIGHT = 35
+        # pad: ((left, right), (top, bottom)) — outer spacing of the table
+        TABLE_PAD = (0, 10)
+        # ----------------------------------
+
         rows.append(
             [
                 sg.Table(
                     values=table_data,
                     headings=["Task", "Score", "Weight", "Status"],
-                    col_widths=[5, 5, 5, 7],
+                    col_widths=[COL_TASK, COL_SCORE, COL_WEIGHT, COL_STATUS],
                     auto_size_columns=False,
                     hide_vertical_scroll=True,
                     num_rows=len(table_data),
                     font=("Arial", 11),
                     header_font=("Arial", 11, "bold"),
-                    pad=(0, 2),
+                    pad=TABLE_PAD,
                     justification="left",
-                    row_height=35,
+                    row_height=ROW_HEIGHT,
                     enable_events=False,
                 )
             ]
@@ -169,7 +401,10 @@ def build_module_card(module: dict, predictions: dict, idx: int) -> sg.Frame:
             [sg.Text(f"Predicted score: {pct(predicted_total)}", font=("Arial", 11))]
         )
 
-    rows.append([sg.Button("Edit Module", key=f"EDIT_{idx}", size=(12, 1))])
+    rows.append([
+        sg.Button("Edit Module", key=f"EDIT_{idx}", size=(12, 1)),
+        sg.Button("View Chart", key=f"CHART_{idx}", size=(12, 1)),
+    ])
 
     return sg.Frame("", rows, border_width=1, font=("Arial", 11), vertical_alignment="top", size=(1000, 400))
 
@@ -209,7 +444,10 @@ def build_main_layout(modules: list, predictions: dict, cols: int = 3) -> list:
         [sg.HorizontalSeparator()],
     ]
     if modules:
-        layout.append([sg.Button("Add Module", key="ADD_MODULE", size=(15, 1))])
+        layout.append([
+            sg.Button("Add Module", key="ADD_MODULE", size=(15, 1)),
+            sg.Button("Year Chart", key="YEAR_CHART", size=(12, 1)),
+        ])
         layout.append([build_module_grid(modules, predictions, cols)])
     else:
         layout.append(
@@ -656,5 +894,12 @@ def run_gui() -> None:
             window.hide()
             modules, predictions, _ = _handle_edit_module(idx, modules, predictions)
             window = rebuild(window, modules, predictions, current_cols)
+
+        elif event and event.startswith("CHART_"):
+            idx = int(event.split("_")[1])
+            open_module_chart_popup(modules[idx], predictions)
+
+        elif event == "YEAR_CHART":
+            open_year_chart_popup(modules, predictions)
 
     window.close()
