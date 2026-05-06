@@ -6,3 +6,8 @@ Shows average required scores to achieve a target of 70%. Allows analysis of pre
 ## future implementation
 Visualises required scores based of current data and model predicted grades.
 
+## dependancies
+PySimpleGUI
+matplotlib
+numpy
+
