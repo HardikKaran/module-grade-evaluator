@@ -3,16 +3,51 @@ import json
 GRADES_FILE = "grades.json"
 
 
-def load_grades(path: str = GRADES_FILE) -> tuple[list[dict], dict[str, float]]:
+def _migrate_flat(data: dict) -> tuple[list[dict], int]:
+    """Wrap old flat-format data (top-level 'modules') into a single-year list."""
+    year = {
+        "name": "Year 1",
+        "weight": 1.0,
+        "target": data.get("target_year_score", 0.70),
+        "modules": data["modules"],
+        "predictions": data.get("predictions", {}),
+    }
+    return [year], 0
+
+
+def load_years(path: str = GRADES_FILE) -> tuple[list[dict], int]:
     with open(path) as f:
         data = json.load(f)
-    return data["modules"], data.get("predictions", {})
+    if "modules" in data:
+        return _migrate_flat(data)
+    years = data["years"]
+    active_idx = data.get("active_year_index", 0)
+    return years, active_idx
+
+
+def save_years(path: str, years: list[dict], active_idx: int) -> None:
+    output = {
+        "years": years,
+        "active_year_index": active_idx,
+    }
+    with open(path, "w") as f:
+        json.dump(output, f, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Legacy helpers kept for app.py compatibility
+# ---------------------------------------------------------------------------
+
+def load_grades(path: str = GRADES_FILE) -> tuple[list[dict], dict, float]:
+    years, _ = load_years(path)
+    y = years[0]
+    return y["modules"], y.get("predictions", {}), y.get("target", 0.70)
 
 
 def save_grades(
     path: str,
     modules: list[dict],
-    predictions: dict[str, float],
+    predictions: dict,
     current: float,
     target: float,
     required: float | None,

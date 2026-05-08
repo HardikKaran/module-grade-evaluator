@@ -13,10 +13,12 @@ from calculator import (
     compute_required,
     compute_required_after_predictions,
     compute_avg_required_incomplete,
+    compute_classification_gaps,
+    compute_degree_overall,
+    compute_degree_classification,
 )
-from storage import GRADES_FILE, load_grades, save_grades
+from storage import GRADES_FILE, load_years, save_years
 
-TARGET = 0.70
 CARD_WIDTH = 1000
 CARD_GAP = 20
 
@@ -34,16 +36,17 @@ def pct(decimal: float) -> str:
     return f"{decimal * 100:.1f}%"
 
 
-def compute_stats(modules: list, predictions: dict) -> dict:
+def compute_stats(modules: list, predictions: dict, target: float) -> dict:
     current, remaining_weight = compute_current(modules)
-    required = compute_required(current, remaining_weight, TARGET)
+    required = compute_required(current, remaining_weight, target)
     predicted = compute_prediction(modules, predictions) if predictions else None
     required_after = (
-        compute_required_after_predictions(modules, predictions, TARGET)
+        compute_required_after_predictions(modules, predictions, target)
         if predictions
         else None
     )
-    avg_required_incomplete = compute_avg_required_incomplete(modules, TARGET)
+    avg_required_incomplete = compute_avg_required_incomplete(modules, target)
+    classification_gaps = compute_classification_gaps(current, remaining_weight)
     return {
         "current": current,
         "remaining_weight": remaining_weight,
@@ -51,6 +54,8 @@ def compute_stats(modules: list, predictions: dict) -> dict:
         "predicted": predicted,
         "required_after": required_after,
         "avg_required_incomplete": avg_required_incomplete,
+        "classification_gaps": classification_gaps,
+        "target": target,
     }
 
 
@@ -65,7 +70,7 @@ def _recompute_module(m: dict) -> dict:
 # Chart rendering
 # ---------------------------------------------------------------------------
 
-def render_module_chart_png(module: dict, predictions: dict, target: float = TARGET) -> bytes:
+def render_module_chart_png(module: dict, predictions: dict, target: float = 0.70) -> bytes:
     """Render a bar chart for one module and return raw PNG bytes."""
     name = module["name"]
     pred_tasks = predictions.get(name, []) if not module["is_complete"] else []
@@ -145,9 +150,9 @@ def render_module_chart_png(module: dict, predictions: dict, target: float = TAR
     return buf.getvalue()
 
 
-def open_module_chart_popup(module: dict, predictions: dict) -> None:
+def open_module_chart_popup(module: dict, predictions: dict, target: float = 0.70) -> None:
     """Open a modal popup showing the bar chart for one module."""
-    png_bytes = render_module_chart_png(module, predictions)
+    png_bytes = render_module_chart_png(module, predictions, target)
     layout = [
         [sg.Text(module["name"], font=("Arial", 13, "bold"))],
         [sg.Image(data=png_bytes)],
@@ -166,7 +171,7 @@ def open_module_chart_popup(module: dict, predictions: dict) -> None:
     win.close()
 
 
-def render_year_chart_png(modules: list, predictions: dict, target: float = TARGET) -> bytes:
+def render_year_chart_png(modules: list, predictions: dict, target: float = 0.70) -> bytes:
     """Render a grouped-bar overview chart for all modules and return PNG bytes."""
     if not modules:
         fig, ax = plt.subplots(figsize=(12, 6), dpi=96)
@@ -253,9 +258,9 @@ def render_year_chart_png(modules: list, predictions: dict, target: float = TARG
     return buf.getvalue()
 
 
-def open_year_chart_popup(modules: list, predictions: dict) -> None:
+def open_year_chart_popup(modules: list, predictions: dict, target: float = 0.70) -> None:
     """Open a modal popup showing the year-level overview chart."""
-    png_bytes = render_year_chart_png(modules, predictions)
+    png_bytes = render_year_chart_png(modules, predictions, target)
     layout = [
         [sg.Text("Year Overview", font=("Arial", 13, "bold"))],
         [sg.Image(data=png_bytes)],
@@ -279,10 +284,12 @@ def open_year_chart_popup(modules: list, predictions: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def build_stats_bar(stats: dict) -> sg.Frame:
+    target = stats["target"]
     elements = [
         sg.Text(f"Current: {pct(stats['current'])}", font=("Arial", 12, "bold")),
         sg.VerticalSeparator(),
-        sg.Text(f"Target: {pct(TARGET)}", font=("Arial", 12)),
+        sg.Text(f"Target: {pct(target)}", font=("Arial", 12)),
+        sg.Button("Settings", key="SETTINGS", size=(8, 1), font=("Arial", 10)),
     ]
 
     if stats["predicted"] is not None:
@@ -317,7 +324,31 @@ def build_stats_bar(stats: dict) -> sg.Frame:
             ),
         ]
 
-    return sg.Frame("Year Statistics", [[*elements]], font=("Arial", 12, "bold"))
+    # Classification bands row
+    gaps = stats.get("classification_gaps", {})
+    band_elements = []
+    for label, required in gaps.items():
+        if required is None:
+            band_elements.append(
+                sg.Text(f"{label}: achieved", font=("Arial", 11), text_color="green")
+            )
+        elif required == float("inf") or required > 1.0:
+            band_elements.append(
+                sg.Text(f"{label}: N/A", font=("Arial", 11), text_color="red")
+            )
+        else:
+            band_elements.append(
+                sg.Text(f"{label}: need {pct(required)}", font=("Arial", 11))
+            )
+        band_elements.append(sg.VerticalSeparator())
+    if band_elements:
+        band_elements.pop()  # remove trailing separator
+
+    rows = [[*elements]]
+    if band_elements:
+        rows.append([sg.Text("Classifications:", font=("Arial", 11, "bold")), sg.VerticalSeparator(), *band_elements])
+
+    return sg.Frame("Year Statistics", rows, font=("Arial", 12, "bold"))
 
 
 # ---------------------------------------------------------------------------
@@ -437,9 +468,12 @@ def build_module_grid(modules: list, predictions: dict, cols: int = 3) -> sg.Col
     )
 
 
-def build_main_layout(modules: list, predictions: dict, cols: int = 3) -> list:
-    stats = compute_stats(modules, predictions)
+def build_main_layout(years: list, active_idx: int, cols: int = 3) -> list:
+    y = years[active_idx]
+    modules, predictions, target = y["modules"], y.get("predictions", {}), y.get("target", 0.70)
+    stats = compute_stats(modules, predictions, target)
     layout = [
+        [*build_year_selector(years, active_idx)],
         [build_stats_bar(stats)],
         [sg.HorizontalSeparator()],
     ]
@@ -459,8 +493,8 @@ def build_main_layout(modules: list, predictions: dict, cols: int = 3) -> list:
     return layout
 
 
-def make_main_window(modules: list, predictions: dict, size=None, cols: int = 3) -> sg.Window:
-    layout = build_main_layout(modules, predictions, cols)
+def make_main_window(years: list, active_idx: int, size=None, cols: int = 3) -> sg.Window:
+    layout = build_main_layout(years, active_idx, cols)
     return sg.Window(
         "Module Grade Evaluator",
         layout,
@@ -806,9 +840,11 @@ def open_module_dialog(
 # Persistence
 # ---------------------------------------------------------------------------
 
-def _do_save(modules: list, predictions: dict) -> None:
-    stats = compute_stats(modules, predictions)
-    save_grades(GRADES_FILE, modules, predictions, stats["current"], TARGET, stats["required"])
+def _do_save(years: list, active_idx: int) -> None:
+    for y in years:
+        current, _ = compute_current(y["modules"])
+        y["current_year_score"] = current
+    save_years(GRADES_FILE, years, active_idx)
 
 
 # ---------------------------------------------------------------------------
@@ -819,7 +855,6 @@ def _handle_add_module(modules: list, predictions: dict):
     module, predictions, action = open_module_dialog(None, predictions, None, modules)
     if action == "save":
         modules.append(module)
-        _do_save(modules, predictions)
         return modules, predictions, True
     return modules, predictions, False
 
@@ -829,47 +864,206 @@ def _handle_edit_module(idx: int, modules: list, predictions: dict):
     module, predictions, action = open_module_dialog(modules[idx], predictions, idx, modules)
     if action == "save":
         modules[idx] = module
-        _do_save(modules, predictions)
         return modules, predictions, True
     elif action == "delete":
         predictions.pop(old_name, None)
         modules.pop(idx)
-        _do_save(modules, predictions)
         return modules, predictions, True
     return modules, predictions, False
+
+
+def open_settings_popup(current_target: float) -> float | None:
+    layout = [
+        [sg.Text("Target Grade (%)", font=("Arial", 12))],
+        [sg.Input(f"{current_target * 100:.1f}", key="TARGET_INPUT", size=(10, 1), font=("Arial", 12))],
+        [sg.Button("Save", key="SAVE", size=(8, 1)), sg.Button("Cancel", key="CANCEL", size=(8, 1))],
+    ]
+    win = sg.Window("Settings", layout, modal=True, finalize=True)
+    result = None
+    while True:
+        ev, vals = win.read()
+        if ev in (sg.WIN_CLOSED, "CANCEL"):
+            break
+        if ev == "SAVE":
+            try:
+                v = float(vals["TARGET_INPUT"].strip())
+                if v < 0 or v > 100:
+                    sg.popup_error("Target must be between 0 and 100", title="Invalid Input")
+                    continue
+                result = v / 100.0
+                break
+            except ValueError:
+                sg.popup_error("Target must be a number", title="Invalid Input")
+    win.close()
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Multi-year dialogs
+# ---------------------------------------------------------------------------
+
+def open_degree_overview_popup(years: list) -> None:
+    overall = compute_degree_overall(years)
+    classification = compute_degree_classification(overall)
+
+    rows = [[sg.Text("Degree Overview", font=("Arial", 13, "bold"))], [sg.HorizontalSeparator()]]
+    for y in years:
+        current, _ = compute_current(y["modules"])
+        rows.append([
+            sg.Text(
+                f"{y['name']}  (weight: {pct(y['weight'])})  —  current: {pct(current)}",
+                font=("Arial", 11),
+            )
+        ])
+    rows += [
+        [sg.HorizontalSeparator()],
+        [sg.Text(f"Overall degree score: {pct(overall)}", font=("Arial", 12, "bold"))],
+        [sg.Text(f"Projected classification: {classification}", font=("Arial", 12, "bold"))],
+        [sg.Button("Close", key="CLOSE", size=(10, 1))],
+    ]
+    win = sg.Window("Degree Overview", rows, modal=True, finalize=True)
+    while True:
+        ev, _ = win.read()
+        if ev in (sg.WIN_CLOSED, "CLOSE"):
+            break
+    win.close()
+
+
+def open_manage_years_dialog(years: list, active_idx: int) -> tuple[list, int, bool]:
+    """Dialog to add, rename, delete years and set weights. Returns (years, active_idx, changed)."""
+    years = [y.copy() for y in years]
+    changed = False
+
+    while True:
+        year_rows = []
+        for i, y in enumerate(years):
+            year_rows.append([
+                sg.Input(y["name"], key=f"YN_{i}", size=(18, 1), font=("Arial", 11)),
+                sg.Text("Weight %:", font=("Arial", 11)),
+                sg.Input(f"{y['weight'] * 100:.1f}", key=f"YW_{i}", size=(8, 1), font=("Arial", 11)),
+                sg.Button("Delete", key=f"DEL_YEAR_{i}", size=(8, 1), button_color=("white", "red"),
+                          disabled=len(years) <= 1),
+            ])
+
+        layout = [
+            [sg.Text("Manage Years", font=("Arial", 13, "bold"))],
+            [sg.Text("Year weights should sum to 100%.", font=("Arial", 10), text_color="gray")],
+            *year_rows,
+            [sg.Button("Add Year", key="ADD_YEAR", size=(12, 1))],
+            [sg.HorizontalSeparator()],
+            [sg.Button("Save", key="SAVE", size=(10, 1)), sg.Button("Cancel", key="CANCEL", size=(10, 1))],
+        ]
+        win = sg.Window("Manage Years", layout, modal=True, finalize=True)
+
+        while True:
+            ev, vals = win.read()
+            if ev in (sg.WIN_CLOSED, "CANCEL"):
+                win.close()
+                return years, active_idx, changed
+
+            if ev == "ADD_YEAR":
+                for i, y in enumerate(years):
+                    y["name"] = vals[f"YN_{i}"].strip() or y["name"]
+                    try:
+                        y["weight"] = float(vals[f"YW_{i}"]) / 100
+                    except ValueError:
+                        pass
+                years.append({"name": f"Year {len(years) + 1}", "weight": 0.0, "target": 0.70,
+                              "modules": [], "predictions": {}})
+                win.close()
+                changed = True
+                break
+
+            if ev.startswith("DEL_YEAR_"):
+                del_idx = int(ev.split("_")[2])
+                if sg.popup_yes_no(f"Delete '{years[del_idx]['name']}'? Its modules will be lost.",
+                                   title="Confirm Delete") == "Yes":
+                    years.pop(del_idx)
+                    if active_idx >= len(years):
+                        active_idx = len(years) - 1
+                    changed = True
+                win.close()
+                break
+
+            if ev == "SAVE":
+                new_years = []
+                ok = True
+                for i, y in enumerate(years):
+                    name = vals[f"YN_{i}"].strip()
+                    if not name:
+                        sg.popup_error(f"Year {i + 1} name cannot be empty", title="Invalid Input")
+                        ok = False
+                        break
+                    try:
+                        w = float(vals[f"YW_{i}"])
+                        if w < 0 or w > 100:
+                            raise ValueError
+                    except ValueError:
+                        sg.popup_error(f"Year '{name}' weight must be 0–100", title="Invalid Input")
+                        ok = False
+                        break
+                    new_years.append({**y, "name": name, "weight": w / 100})
+                if not ok:
+                    continue
+                win.close()
+                return new_years, active_idx, True
+
+
+# ---------------------------------------------------------------------------
+# Year selector row
+# ---------------------------------------------------------------------------
+
+def build_year_selector(years: list, active_idx: int) -> list:
+    buttons = []
+    for i, y in enumerate(years):
+        btn_color = ("white", "#1976D2") if i == active_idx else ("black", "#E0E0E0")
+        buttons.append(sg.Button(y["name"], key=f"YEAR_{i}", button_color=btn_color, font=("Arial", 11)))
+    buttons += [
+        sg.Button("+ Year", key="ADD_YEAR_BTN", size=(8, 1), font=("Arial", 10)),
+        sg.Button("Manage Years", key="MANAGE_YEARS", size=(13, 1), font=("Arial", 10)),
+        sg.Button("Degree Overview", key="DEGREE_OVERVIEW", size=(15, 1), font=("Arial", 10)),
+    ]
+    return buttons
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _migrate_predictions(modules: list, predictions: dict) -> dict:
+    for m in modules:
+        name = m["name"]
+        if name in predictions and isinstance(predictions[name], (int, float)):
+            old_score = float(predictions[name])
+            predictions[name] = [
+                {"name": "Predicted", "score": old_score, "weight": m["remaining_fraction"]}
+            ]
+    return predictions
+
+
 def run_gui() -> None:
     sg.theme("LightGrey1")
 
-    modules, predictions = [], {}
+    years = [{"name": "Year 1", "weight": 1.0, "target": 0.70, "modules": [], "predictions": {}}]
+    active_idx = 0
     if os.path.exists(GRADES_FILE):
         try:
-            modules, predictions = load_grades(GRADES_FILE)
-            # Migrate old float predictions ({"ModName": 0.75}) to new list format
-            for m in modules:
-                name = m["name"]
-                if name in predictions and isinstance(predictions[name], (int, float)):
-                    old_score = float(predictions[name])
-                    predictions[name] = [
-                        {"name": "Predicted", "score": old_score, "weight": m["remaining_fraction"]}
-                    ]
+            years, active_idx = load_years(GRADES_FILE)
+            for y in years:
+                y["predictions"] = _migrate_predictions(y["modules"], y.get("predictions", {}))
         except Exception as e:
             sg.popup_error(f"Could not load grades.json — starting fresh.\n\nError: {e}", title="Load Error")
 
-    current_cols = compute_cols(1600)  # initial estimate
-    window = make_main_window(modules, predictions, cols=current_cols)
+    current_cols = compute_cols(1600)
+    window = make_main_window(years, active_idx, cols=current_cols)
 
-    def rebuild(win, mods, preds, cols_count):
-        """Save window size, close, rebuild, restore size."""
+    def rebuild(win, yrs, year_idx, cols_count):
         saved_size = win.size
         win.close()
-        new_win = make_main_window(mods, preds, size=saved_size, cols=cols_count)
-        return new_win
+        return make_main_window(yrs, year_idx, size=saved_size, cols=cols_count)
+
+    def active_year():
+        return years[active_idx]
 
     while True:
         event, _ = window.read(timeout=250)
@@ -878,28 +1072,66 @@ def run_gui() -> None:
             break
 
         elif event == sg.TIMEOUT_EVENT:
-            # Check if window width changed the column count
             new_cols = compute_cols(window.size[0])
             if new_cols != current_cols:
                 current_cols = new_cols
-                window = rebuild(window, modules, predictions, current_cols)
+                window = rebuild(window, years, active_idx, current_cols)
+
+        elif event and event.startswith("YEAR_") and event[5:].isdigit():
+            active_idx = int(event[5:])
+            window = rebuild(window, years, active_idx, current_cols)
+
+        elif event == "SETTINGS":
+            target = active_year().get("target", 0.70)
+            new_target = open_settings_popup(target)
+            if new_target is not None:
+                active_year()["target"] = new_target
+                _do_save(years, active_idx)
+                window = rebuild(window, years, active_idx, current_cols)
 
         elif event in ("ADD_MODULE", "ADD_MODULE_EMPTY"):
+            y = active_year()
             window.hide()
-            modules, predictions, _ = _handle_add_module(modules, predictions)
-            window = rebuild(window, modules, predictions, current_cols)
+            mods, new_predictions, changed = _handle_add_module(y["modules"], y.get("predictions", {}))
+            if changed:
+                y["modules"], y["predictions"] = mods, new_predictions
+                _do_save(years, active_idx)
+            window = rebuild(window, years, active_idx, current_cols)
 
-        elif event and event.startswith("EDIT_"):
-            idx = int(event.split("_")[1])
+        elif event and event.startswith("EDIT_") and event[5:].isdigit():
+            idx = int(event[5:])
+            y = active_year()
             window.hide()
-            modules, predictions, _ = _handle_edit_module(idx, modules, predictions)
-            window = rebuild(window, modules, predictions, current_cols)
+            mods, new_predictions, changed = _handle_edit_module(idx, y["modules"], y.get("predictions", {}))
+            if changed:
+                y["modules"], y["predictions"] = mods, new_predictions
+                _do_save(years, active_idx)
+            window = rebuild(window, years, active_idx, current_cols)
 
-        elif event and event.startswith("CHART_"):
-            idx = int(event.split("_")[1])
-            open_module_chart_popup(modules[idx], predictions)
+        elif event and event.startswith("CHART_") and event[6:].isdigit():
+            idx = int(event[6:])
+            y = active_year()
+            open_module_chart_popup(y["modules"][idx], y.get("predictions", {}), y.get("target", 0.70))
 
         elif event == "YEAR_CHART":
-            open_year_chart_popup(modules, predictions)
+            y = active_year()
+            open_year_chart_popup(y["modules"], y.get("predictions", {}), y.get("target", 0.70))
+
+        elif event in ("ADD_YEAR_BTN",):
+            new_year = {"name": f"Year {len(years) + 1}", "weight": 0.0, "target": 0.70,
+                        "modules": [], "predictions": {}}
+            years.append(new_year)
+            active_idx = len(years) - 1
+            _do_save(years, active_idx)
+            window = rebuild(window, years, active_idx, current_cols)
+
+        elif event == "MANAGE_YEARS":
+            years, active_idx, changed = open_manage_years_dialog(years, active_idx)
+            if changed:
+                _do_save(years, active_idx)
+            window = rebuild(window, years, active_idx, current_cols)
+
+        elif event == "DEGREE_OVERVIEW":
+            open_degree_overview_popup(years)
 
     window.close()
