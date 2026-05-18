@@ -1,6 +1,24 @@
 import json
+import os
 
 GRADES_FILE = "grades.json"
+
+SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+DEFAULT_THEME = "LightGrey1"
+
+
+def load_settings() -> dict:
+    try:
+        with open(SETTINGS_FILE) as f:
+            data = json.load(f)
+        return {"theme": str(data.get("theme", DEFAULT_THEME))}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {"theme": DEFAULT_THEME}
+
+
+def save_settings(settings: dict) -> None:
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump(settings, f, indent=2)
 
 
 def _migrate_flat(data: dict) -> tuple[list[dict], int]:

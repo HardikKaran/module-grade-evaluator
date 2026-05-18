@@ -1,5 +1,6 @@
 import os
 import io
+import re
 import textwrap
 import PySimpleGUI as sg
 import matplotlib
@@ -17,9 +18,23 @@ from calculator import (
     compute_degree_overall,
     compute_degree_classification,
 )
-from storage import GRADES_FILE, load_years, save_years
+from storage import GRADES_FILE, load_years, save_years, load_settings, save_settings
 
 CARD_WIDTH = 1000
+
+
+def _sort_years(years: list, active_idx: int) -> tuple[list, int]:
+    if not years:
+        return years, active_idx
+    active_name = years[active_idx]["name"]
+
+    def _key(y):
+        m = re.search(r"\d+", y["name"])
+        return (0, int(m.group())) if m else (1, y["name"])
+
+    years = sorted(years, key=_key)
+    new_idx = next((i for i, y in enumerate(years) if y["name"] == active_name), 0)
+    return years, new_idx
 CARD_GAP = 20
 
 
@@ -872,6 +887,31 @@ def _handle_edit_module(idx: int, modules: list, predictions: dict):
     return modules, predictions, False
 
 
+def open_theme_picker(current_theme: str) -> str | None:
+    themes = sg.theme_list()
+    default_idx = themes.index(current_theme) if current_theme in themes else 0
+    layout = [
+        [sg.Text("Select a theme:", font=("Arial", 12))],
+        [sg.Listbox(themes, default_values=[themes[default_idx]], size=(30, 20),
+                    key="THEME_LIST", font=("Arial", 11), enable_events=True)],
+        [sg.Button("Apply", key="APPLY", size=(8, 1)), sg.Button("Cancel", key="CANCEL", size=(8, 1))],
+    ]
+    win = sg.Window("Choose Theme", layout, modal=True, finalize=True)
+    result = None
+    while True:
+        ev, vals = win.read()
+        if ev in (sg.WIN_CLOSED, "CANCEL"):
+            break
+        if ev in ("APPLY", "THEME_LIST"):
+            selected = vals.get("THEME_LIST")
+            if selected:
+                result = selected[0]
+            if ev == "APPLY":
+                break
+    win.close()
+    return result if result and result != current_theme else None
+
+
 def open_settings_popup(current_target: float) -> float | None:
     layout = [
         [sg.Text("Target Grade (%)", font=("Arial", 12))],
@@ -1016,12 +1056,16 @@ def open_manage_years_dialog(years: list, active_idx: int) -> tuple[list, int, b
 def build_year_selector(years: list, active_idx: int) -> list:
     buttons = []
     for i, y in enumerate(years):
-        btn_color = ("white", "#1976D2") if i == active_idx else ("black", "#E0E0E0")
+        if i == active_idx:
+            btn_color = ("white", "#1976D2")
+        else:
+            btn_color = (sg.theme_text_color(), sg.theme_background_color())
         buttons.append(sg.Button(y["name"], key=f"YEAR_{i}", button_color=btn_color, font=("Arial", 11)))
     buttons += [
         sg.Button("+ Year", key="ADD_YEAR_BTN", size=(8, 1), font=("Arial", 10)),
         sg.Button("Manage Years", key="MANAGE_YEARS", size=(13, 1), font=("Arial", 10)),
         sg.Button("Degree Overview", key="DEGREE_OVERVIEW", size=(15, 1), font=("Arial", 10)),
+        sg.Button("Theme", key="THEME_BTN", size=(8, 1), font=("Arial", 10)),
     ]
     return buttons
 
@@ -1042,7 +1086,10 @@ def _migrate_predictions(modules: list, predictions: dict) -> dict:
 
 
 def run_gui() -> None:
-    sg.theme("LightGrey1")
+    settings = load_settings()
+    if settings.get("theme") not in sg.theme_list():
+        settings["theme"] = "LightGrey1"
+    sg.theme(settings["theme"])
 
     years = [{"name": "Year 1", "weight": 1.0, "target": 0.70, "modules": [], "predictions": {}}]
     active_idx = 0
@@ -1051,6 +1098,7 @@ def run_gui() -> None:
             years, active_idx = load_years(GRADES_FILE)
             for y in years:
                 y["predictions"] = _migrate_predictions(y["modules"], y.get("predictions", {}))
+            years, active_idx = _sort_years(years, active_idx)
         except Exception as e:
             sg.popup_error(f"Could not load grades.json — starting fresh.\n\nError: {e}", title="Load Error")
 
@@ -1121,17 +1169,26 @@ def run_gui() -> None:
             new_year = {"name": f"Year {len(years) + 1}", "weight": 0.0, "target": 0.70,
                         "modules": [], "predictions": {}}
             years.append(new_year)
-            active_idx = len(years) - 1
+            years, active_idx = _sort_years(years, len(years) - 1)
             _do_save(years, active_idx)
             window = rebuild(window, years, active_idx, current_cols)
 
         elif event == "MANAGE_YEARS":
             years, active_idx, changed = open_manage_years_dialog(years, active_idx)
+            years, active_idx = _sort_years(years, active_idx)
             if changed:
                 _do_save(years, active_idx)
             window = rebuild(window, years, active_idx, current_cols)
 
         elif event == "DEGREE_OVERVIEW":
             open_degree_overview_popup(years)
+
+        elif event == "THEME_BTN":
+            new_theme = open_theme_picker(settings.get("theme", "LightGrey1"))
+            if new_theme is not None:
+                settings["theme"] = new_theme
+                save_settings(settings)
+                sg.theme(new_theme)
+                window = rebuild(window, years, active_idx, current_cols)
 
     window.close()
